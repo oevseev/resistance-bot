@@ -95,13 +95,13 @@ class GameInstance:
         self._leader_idx = -1
 
     def next_state(self):
-        if self.state is GameState.NOT_STARTED:
+        if self.state == GameState.NOT_STARTED:
             if not MIN_PLAYERS <= len(self.players) <= MAX_PLAYERS:
                 raise GameError("The number of players must be between {0} and {1}!".format(MIN_PLAYERS, MAX_PLAYERS))
             self._assign_spies()
             self._next_round_or_gameover()
 
-        elif self.state is GameState.PARTY_VOTE_RESULTS:
+        elif self.state == GameState.PARTY_VOTE_RESULTS:
             if self.current_vote.outcome:
                 self.state = GameState.MISSION_VOTE_IN_PROGRESS
             else:
@@ -111,7 +111,7 @@ class GameInstance:
                 else:
                     self._next_round_or_gameover()
 
-        elif self.state is GameState.MISSION_VOTE_RESULTS:
+        elif self.state == GameState.MISSION_VOTE_RESULTS:
             self._next_leader()
             self._next_round_or_gameover()
 

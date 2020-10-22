@@ -2,6 +2,7 @@ import logging
 from functools import wraps
 
 import telegram
+from telegram.ext import CallbackContext
 
 
 logger = logging.getLogger(__name__)
@@ -9,11 +10,11 @@ logger = logging.getLogger(__name__)
 
 def group_only(handler):
     @wraps(handler)
-    def decorated_handler(self, bot: telegram.Bot, update: telegram.Update):
+    def decorated_handler(self, update: telegram.Update, context: CallbackContext):
         if update.message.chat.type not in ['group', 'supergroup']:
             update.message.reply_text("Add this bot to a group to play!")
             return
-        handler(self, bot, update)
+        handler(self, update, context)
 
     return decorated_handler
 
@@ -21,9 +22,9 @@ def group_only(handler):
 def report_exceptions(*args):
     def decorator(handler):
         @wraps(handler)
-        def decorated_handler(self, bot: telegram.Bot, update: telegram.Update):
+        def decorated_handler(self, update: telegram.Update, context: CallbackContext):
             try:
-                handler(self, bot, update)
+                handler(self, update, context)
             except BaseException as e:
                 if any(isinstance(e, x) for x in args):
                     if update.callback_query is not None:

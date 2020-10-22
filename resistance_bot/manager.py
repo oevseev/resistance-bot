@@ -2,7 +2,7 @@ import logging
 from typing import Dict
 
 import telegram
-from telegram.ext import CommandHandler
+from telegram.ext import CommandHandler, CallbackContext
 
 from .game import GameError, GameInstance
 from .util import group_only, report_exceptions
@@ -48,13 +48,13 @@ class GameManager:
 
     @group_only
     @report_exceptions(GameError, ManagerError)
-    def _handle_new_game(self, bot: telegram.Bot, update: telegram.Update):
+    def _handle_new_game(self, update: telegram.Update, context: CallbackContext):
         self.create_game(update.effective_chat, creator=update.effective_user)
         update.message.reply_text("The game is created. Send /register to register.")
 
     @group_only
     @report_exceptions(GameError, ManagerError)
-    def _handle_cancel_game(self, bot: telegram.Bot, update: telegram.Update):
+    def _handle_cancel_game(self, update: telegram.Update, context: CallbackContext):
         game = self.get_game(update.effective_chat)
         if game.creator == update.effective_user:
             self.delete_game(update.effective_chat)
@@ -64,6 +64,6 @@ class GameManager:
 
     @group_only
     @report_exceptions(GameError, ManagerError)
-    def _handle_register(self, bot: telegram.Bot, update: telegram.Update):
+    def _handle_register(self, update: telegram.Update, context: CallbackContext):
         self.add_player(update.effective_chat, update.effective_user)
         update.message.reply_text("You are registered now.")

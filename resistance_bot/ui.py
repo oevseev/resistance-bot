@@ -4,7 +4,7 @@ from functools import wraps
 import telegram.ext
 from emoji import emojize
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import CommandHandler, CallbackQueryHandler
+from telegram.ext import CommandHandler, CallbackQueryHandler, CallbackContext
 
 from .manager import ManagerError
 from .game import GameError, GameInstance, GameState
@@ -25,10 +25,10 @@ class UI:
         dispatcher.add_handler(CommandHandler('select', self._handle_select), group)
         dispatcher.add_handler(CallbackQueryHandler(self._handle_callbacks), group)
 
-    def start_game(self, bot: telegram.Bot, update: telegram.Update, game: GameInstance):
+    def start_game(self, update: telegram.Update, context: CallbackContext, game: GameInstance):
         if update.message.from_user != game.creator:
             raise GameError("Only creator can start the game.")
-        if game.state is not GameState.NOT_STARTED:
+        if game.state != GameState.NOT_STARTED:
             raise GameError("Game is already in progress.")
 
         game.next_state()
@@ -43,10 +43,10 @@ class UI:
             parse_mode='markdown',
             reply_markup=reply_markup)
 
-        self._show_round_info(bot, game)
-        self._show_proposal_prompt(bot, game)
+        self._show_round_info(context, game)
+        self._show_proposal_prompt(context, game)
 
-    def select(self, bot: telegram.Bot, update: telegram.Update, game: GameInstance):
+    def select(self, update: telegram.Update, context: CallbackContext, game: GameInstance):
         raw_args = [x.strip() for x in update.message.text.split()[1:]]
 
         party = []
@@ -69,11 +69,11 @@ class UI:
 
         game.propose_party(update.effective_user, party)
 
-        if game.state is GameState.PARTY_VOTE_IN_PROGRESS:
-            self._show_party_vote_prompt(bot, game)
+        if game.state == GameState.PARTY_VOTE_IN_PROGRESS:
+            self._show_party_vote_prompt(context, game)
 
-    def get_role(self, bot: telegram.Bot, update: telegram.Update, game: GameInstance):
-        if game.state is GameState.NOT_STARTED:
+    def get_role(self, update: telegram.Update, context: CallbackContext, game: GameInstance):
+        if game.state == GameState.NOT_STARTED:
             raise GameError("Game is not started yet!")
 
         response = _(":red_circle: Resistance member")
@@ -85,7 +85,7 @@ class UI:
 
         update.callback_query.answer(response)
 
-    def party_vote(self, bot: telegram.Bot, update: telegram.Update, game: GameInstance):
+    def party_vote(self, update: telegram.Update, context: CallbackContext, game: GameInstance):
         query = update.callback_query
         affirmative = query.data == 'party_vote_affirmative'
         game.vote_party(update.effective_user, affirmative)
@@ -94,29 +94,35 @@ class UI:
             query.answer(_("Voted :thumbs_up:"))
         else:
             query.answer(_("Voted :thumbs_down:"))
-        query.message.edit_text(UI._get_party_vote_message(game), parse_mode='markdown')
 
-        if game.state is GameState.PARTY_VOTE_RESULTS:
-            self._report_party_vote_outcome(bot, game)
-            prev_round_no = len(game.rounds)
-            game.next_state()
+        query.message.edit_text(
+            UI._get_party_vote_message(game),
+            parse_mode='markdown',
+            reply_markup=UI._construct_party_vote_markup())
 
-            if len(game.rounds) != prev_round_no:
-                bot.send_message(
-                    game.chat.id,
-                    "*{0}*".format("Maximum number of failed votes reached. Spies win the round."),
-                    parse_mode='markdown')
-                self._show_round_info(bot, game)
+        if game.state != GameState.PARTY_VOTE_RESULTS:
+            return
 
-            if game.state is GameState.PROPOSAL_PENDING:
-                self._show_proposal_prompt(bot, game)
-            elif game.state is GameState.MISSION_VOTE_IN_PROGRESS:
-                self._show_mission_vote_prompt(bot, game)
-            elif game.state is GameState.GAME_OVER:
-                self._report_game_outcome(bot, game)
-                self.bot.gm.delete_game(game.chat)
+        self._report_party_vote_outcome(context, game)
+        prev_round_no = len(game.rounds)
+        game.next_state()
 
-    def mission_vote(self, bot: telegram.Bot, update: telegram.Update, game: GameInstance):
+        if len(game.rounds) != prev_round_no:
+            context.bot.send_message(
+                game.chat.id,
+                "*{0}*".format("Maximum number of failed votes reached. Spies win the round."),
+                parse_mode='markdown')
+            self._show_round_info(context, game)
+
+        if game.state == GameState.PROPOSAL_PENDING:
+            self._show_proposal_prompt(context, game)
+        elif game.state == GameState.MISSION_VOTE_IN_PROGRESS:
+            self._show_mission_vote_prompt(context, game)
+        elif game.state == GameState.GAME_OVER:
+            self._report_game_outcome(context, game)
+            self.bot.gm.delete_game(game.chat)
+
+    def mission_vote(self, update: telegram.Update, context: CallbackContext, game: GameInstance):
         query = update.callback_query
         red = query.data == 'mission_vote_red'
         game.vote_mission(update.effective_user, red)
@@ -125,20 +131,26 @@ class UI:
             query.answer(_("Voted :red_circle:"))
         else:
             query.answer(_("Voted :black_circle:"))
-        query.message.edit_text(UI._get_mission_vote_message(game), parse_mode='markdown')
 
-        if game.state is GameState.MISSION_VOTE_RESULTS:
-            self._report_mission_vote_outcome(bot, game)
-            game.next_state()
-            if game.state is GameState.PROPOSAL_PENDING:
-                self._show_round_info(bot, game)
-                self._show_proposal_prompt(bot, game)
-            elif game.state is GameState.GAME_OVER:
-                self._report_game_outcome(bot, game)
-                self.bot.gm.delete_game(game.chat)
+        query.message.edit_text(
+            UI._get_mission_vote_message(game),
+            parse_mode='markdown',
+            reply_markup=UI._construct_mission_vote_markup())
 
-    def _show_round_info(self, bot: telegram.Bot, game: GameInstance):
-        bot.send_message(
+        if game.state != GameState.MISSION_VOTE_RESULTS:
+            return
+
+        self._report_mission_vote_outcome(context, game)
+        game.next_state()
+        if game.state == GameState.PROPOSAL_PENDING:
+            self._show_round_info(context, game)
+            self._show_proposal_prompt(context, game)
+        elif game.state == GameState.GAME_OVER:
+            self._report_game_outcome(context, game)
+            self.bot.gm.delete_game(game.chat)
+
+    def _show_round_info(self, context: CallbackContext, game: GameInstance):
+        context.bot.send_message(
             game.chat.id,
             _(":black_small_square: *ROUND #{0}* :black_small_square:\n"
               "• The party must consist of *{1}* player(s).\n"
@@ -146,9 +158,9 @@ class UI:
             .format(len(game.rounds), game.current_party_size, game.current_winning_count),
             parse_mode='markdown')
 
-    def _show_proposal_prompt(self, bot: telegram.Bot, game: GameInstance):
+    def _show_proposal_prompt(self, context: CallbackContext, game: GameInstance):
         player_list = "\n".join("{0}. {1}".format(i, x.name) for i, x in enumerate(game.players, 1))
-        bot.send_message(
+        context.bot.send_message(
             game.chat.id,
             _("{0}, you are the leader now.\n"
               "Please select *{1}* player(s) from the list:\n\n{2}\n\n"
@@ -157,31 +169,21 @@ class UI:
             parse_mode='markdown'
         )
 
-    def _show_party_vote_prompt(self, bot: telegram.Bot, game: GameInstance):
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton(_(":thumbs_up:"), callback_data='party_vote_affirmative'),
-             InlineKeyboardButton(_(":thumbs_down:"), callback_data='party_vote_negative')]
-        ])
-
-        bot.send_message(
+    def _show_party_vote_prompt(self, context: CallbackContext, game: GameInstance):
+        context.bot.send_message(
             game.chat.id,
             UI._get_party_vote_message(game),
             parse_mode='markdown',
-            reply_markup=markup)
+            reply_markup=UI._construct_party_vote_markup())
 
-    def _show_mission_vote_prompt(self, bot: telegram.Bot, game: GameInstance):
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton(_(":red_circle:"), callback_data='mission_vote_red'),
-             InlineKeyboardButton(_(":black_circle:"), callback_data='mission_vote_black')]
-        ])
-
-        bot.send_message(
+    def _show_mission_vote_prompt(self, context: CallbackContext, game: GameInstance):
+        context.bot.send_message(
             game.chat.id,
             UI._get_mission_vote_message(game),
             parse_mode='markdown',
-            reply_markup=markup)
+            reply_markup=UI._construct_mission_vote_markup())
 
-    def _report_party_vote_outcome(self, bot: telegram.Bot, game: GameInstance):
+    def _report_party_vote_outcome(self, context: CallbackContext, game: GameInstance):
         caption = "Vote succeeded!" if game.current_vote.outcome else "Vote failed."
 
         vote_list = "\n".join(
@@ -190,49 +192,49 @@ class UI:
                 _(":thumbs_up:") if ballot else _(":thumbs_down:"))
             for player, ballot in game.current_vote.ballots.items())
 
-        bot.send_message(game.chat.id, "*{0}*\n{1}".format(caption, vote_list), parse_mode='markdown')
+        context.bot.send_message(game.chat.id, "*{0}*\n{1}".format(caption, vote_list), parse_mode='markdown')
 
-    def _report_mission_vote_outcome(self, bot: telegram.Bot, game: GameInstance):
+    def _report_mission_vote_outcome(self, context: CallbackContext, game: GameInstance):
         caption = "{0} won the round.".format("Resistance" if game.current_round.outcome else "Spies")
 
         votes = list(game.current_round.ballots.values())
         random.shuffle(votes)
         vote_list = "".join(_(":red_circle:") if x else _(":black_circle:") for x in votes)
 
-        bot.send_message(game.chat.id, "*{0}*\n{1}".format(caption, vote_list), parse_mode='markdown')
+        context.bot.send_message(game.chat.id, "*{0}*\n{1}".format(caption, vote_list), parse_mode='markdown')
 
-    def _report_game_outcome(self, bot: telegram.Bot, game: GameInstance):
+    def _report_game_outcome(self, context: CallbackContext, game: GameInstance):
         message = "Spies won the game!"
         if game.outcome:
             message = "Resistance won the game!"
-        bot.send_message(game.chat.id, "*{0}*".format(message), parse_mode='markdown')
+        context.bot.send_message(game.chat.id, "*{0}*".format(message), parse_mode='markdown')
 
     @group_only
     @report_exceptions(GameError, ManagerError)
-    def _handle_start_game(self, bot: telegram.Bot, update: telegram.Update):
-        self._ingame(self.start_game)(bot, update)
+    def _handle_start_game(self, update: telegram.Update, context: CallbackContext):
+        self._ingame(self.start_game)(update, context)
 
     @group_only
     @report_exceptions(GameError, ManagerError)
-    def _handle_select(self, bot: telegram.Bot, update: telegram.Update):
-        self._ingame(self.select)(bot, update)
+    def _handle_select(self, update: telegram.Update, context: CallbackContext):
+        self._ingame(self.select)(update, context)
 
     @report_exceptions(GameError, ManagerError)
-    def _handle_callbacks(self, bot: telegram.Bot, update: telegram.Update):
+    def _handle_callbacks(self, update: telegram.Update, context: CallbackContext):
         if update.callback_query.data == 'get_role':
-            self._ingame(self.get_role)(bot, update)
+            self._ingame(self.get_role)(update, context)
         elif update.callback_query.data.startswith('party_vote'):
-            self._ingame(self.party_vote)(bot, update)
+            self._ingame(self.party_vote)(update, context)
         elif update.callback_query.data.startswith('mission_vote'):
-            self._ingame(self.mission_vote)(bot, update)
+            self._ingame(self.mission_vote)(update, context)
 
     def _ingame(self, handler):
         @wraps(handler)
-        def wrapped_handler(bot: telegram.Bot, update: telegram.Update):
+        def wrapped_handler(update: telegram.Update, context: CallbackContext):
             game = self.bot.gm.get_game(update.effective_chat)
             if update.effective_user not in game.players:
                 raise GameError("You are not registered!")
-            handler(bot, update, game)
+            handler(update, context, game)
         return wrapped_handler
 
     @staticmethod
@@ -258,3 +260,17 @@ class UI:
             len(game.current_round.ballots),
             game.current_party_size
         )
+
+    @staticmethod
+    def _construct_party_vote_markup():
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(_(":thumbs_up:"), callback_data='party_vote_affirmative'),
+             InlineKeyboardButton(_(":thumbs_down:"), callback_data='party_vote_negative')]
+        ])
+
+    @staticmethod
+    def _construct_mission_vote_markup():
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton(_(":red_circle:"), callback_data='mission_vote_red'),
+             InlineKeyboardButton(_(":black_circle:"), callback_data='mission_vote_black')]
+        ])
